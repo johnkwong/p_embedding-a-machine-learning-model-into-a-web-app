@@ -1,0 +1,792 @@
+<!doctype html>
+<html>
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+		<title>reveal.js</title>
+
+		<link rel="stylesheet" href="css/reveal.css">
+		<link rel="stylesheet" href="css/theme/league.css">
+
+		<!-- Theme used for syntax highlighting of code -->
+		<link rel="stylesheet" href="lib/css/zenburn.css">
+
+		<!-- Printing and PDF exports -->
+		<script>
+			var link = document.createElement( 'link' );
+			link.rel = 'stylesheet';
+			link.type = 'text/css';
+			link.href = window.location.search.match( /print-pdf/gi ) ? 'css/print/pdf.css' : 'css/print/paper.css';
+			document.getElementsByTagName( 'head' )[0].appendChild( link );
+		</script>
+	</head>
+	<body>
+		<div class="reveal">
+			<div class="slides">
+				<section>
+					<h1>Embedding a Machine Learning Model into a Web Application</h1>
+					<h3>在Web應用程式上嵌入機器學習模型</h3>
+					<!-- <p>
+						<small>Created by <a href="http://hakim.se">Hakim El Hattab</a> / <a href="http://twitter.com/hakimel">@hakimel</a></small>
+					</p> -->
+				</section>
+
+				<section>
+					<h1>Movie Review Application</h1>
+				</section>
+				<section>
+
+					<section>
+						<h2>Training classification model</h2>
+						<pre><code class="hljs" data-trim contenteditable>
+import numpy as np
+import re
+from nltk.corpus import stopwords
+from nltk.stem import PorterStemmer
+
+stop = stopwords.words('english')
+porter = PorterStemmer()
+
+def tokenizer(text):
+    text = re.sub('<[^>]*>', '', text)
+    emoticons = re.findall('(?::|;|=)(?:-)?(?:\)|\(|D|P)', text.lower())
+    text = re.sub('[\W]+', ' ', text.lower()) + ' '.join(emoticons).replace('-', '')
+    tokenized = [w for w in text.split() if w not in stop]
+    return tokenized
+
+def stream_docs(path):
+    with open(path, 'r') as csv:
+        next(csv) # skip header
+        for line in csv:
+            text, label = line[:-3], int(line[-2])
+            yield text, label
+						</code></pre>
+						<pre><code class="hljs" data-trim contenteditable>
+next(stream_docs(path='./movie_data.csv'))
+('"In 1974, the teenager Martha Moxley (Maggie Grace) moves to the high-class area of Belle Haven, Greenwich, Connecticut. On the Mischief Night, eve of Halloween, she was murdered in the backyard of her house and her murder remained unsolved. Twenty-two years later, the writer Mark Fuhrman (Christopher Meloni), who is a former LA detective that has fallen in disgrace for perjury in O.J. Simpson trial and moved to Idaho, decides to investigate the case with his partner Stephen Weeks (Andrew Mitchell) with the purpose of writing a book. The locals squirm and do not welcome them, but with the support of the retired detective Steve Carroll (Robert Forster) that was in charge of the investigation in the 70\'s, they discover the criminal and a net of power and money to cover the murder.<br /><br />""Murder in Greenwich"" is a good TV movie, with the true story of a murder of a fifteen years old girl that was committed by a wealthy teenager whose mother was a Kennedy. The powerful and rich family used their influence to cover the murder for more than twenty years. However, a snoopy detective and convicted perjurer in disgrace was able to disclose how the hideous crime was committed. The screenplay shows the investigation of Mark and the last days of Martha in parallel, but there is a lack of the emotion in the dramatization. My vote is seven.<br /><br />Title (Brazil): Not Available"',
+ 1)
+						</code></pre>
+					</section>
+					<section>
+						<pre><code class="hljs" data-trim contenteditable>
+def get_minibatch(doc_stream, size):
+    docs, y = [], []
+    try:
+        for _ in range(size):
+            text, label = next(doc_stream)
+            docs.append(text)
+            y.append(label)
+    except StopIteration:
+        return None, None
+    return docs, y
+						</code></pre>
+						<pre><code class="hljs" data-trim contenteditable>
+from sklearn.feature_extraction.text import HashingVectorizer
+from sklearn.linear_model import SGDClassifier
+
+vect = HashingVectorizer(decode_error='ignore',
+                         n_features=2**21,
+                         preprocessor=None,
+                         tokenizer=tokenizer)
+
+clf = SGDClassifier(loss='log', random_state=1, n_iter=1)
+doc_stream = stream_docs(path='./movie_data.csv')
+						</code></pre>
+					</section>
+
+					<section>
+						<pre><code class="hljs" data-trim contenteditable>
+import pyprind
+pbar = pyprind.ProgBar(45)
+
+classes = np.array([0, 1])
+for _ in range(45):
+    X_train, y_train = get_minibatch(doc_stream, size=1000)
+    if not X_train:
+        break
+    X_train = vect.transform(X_train)
+    clf.partial_fit(X_train, y_train, classes=classes)
+    pbar.update()
+						</code></pre>
+						<pre><code class="hljs" data-trim contenteditable>
+0%                          100%
+[##############################] | ETA: 00:00:00
+Total time elapsed: 00:01:39
+						</code></pre>
+						<pre><code class="hljs" data-trim contenteditable>
+X_test, y_test = get_minibatch(doc_stream, size=5000)
+X_test = vect.transform(X_test)
+print('Accuracy: %.3f' % clf.score(X_test, y_test))
+						</code></pre>
+						<pre><code class="hljs" data-trim contenteditable>
+Accuracy: 0.867
+						</code></pre>
+						<pre><code class="hljs" data-trim contenteditable>
+clf = clf.partial_fit(X_test, y_test)
+						</code></pre>
+					</section>
+
+
+
+				</section>
+				<section>
+					<section id="fragments">
+						<h2>Serializing (序列化) fitted scikit-learn estimators</h2>
+						<p class="fragment">Don't need to retraining model</p>
+						<p class="fragment">Model persisternce</p>
+						<p class="fragment">Increase performance</p>
+						<p class="fragment">Cost reduction of cloud computing</p>
+
+						<aside class="notes">
+							This slide has fragments which are also stepped through in the notes window.
+						</aside>
+					</section>
+					<section>
+						<h3>Saving serialized objects to our local disk</h3>
+						<pre><code class="hljs" data-trim contenteditable>
+import pickle
+import os
+
+dest = os.path.join('movieclassifier', 'pkl_objects')
+if not os.path.exists(dest):
+    os.makedirs(dest)
+
+pickle.dump(stop, open(os.path.join(dest, 'stopwords.pkl'), 'wb'), protocol=4)
+pickle.dump(clf, open(os.path.join(dest, 'classifier.pkl'), 'wb'), protocol=4)
+						</code></pre>
+						<p>it create the 2 pickle files (stopwords.pkl and classifier.pkl) to movieclassifier/pkl_objects directory</p>
+					</section>
+
+					<section>
+						<h3>Saving serialized objects to our local disk</h3>
+						<pre><code class="hljs" data-trim contenteditable>
+from sklearn.feature_extraction.text import HashingVectorizer
+import re
+import os
+import pickle
+
+cur_dir = os.path.dirname(__file__)
+stop = pickle.load(open(
+                os.path.join(cur_dir,
+                'pkl_objects',
+                'stopwords.pkl'), 'rb'))
+
+def tokenizer(text):
+    text = re.sub('<[^>]*>', '', text)
+    emoticons = re.findall('(?::|;|=)(?:-)?(?:\)|\(|D|P)',
+                           text.lower())
+    text = re.sub('[\W]+', ' ', text.lower()) \
+                   + ' '.join(emoticons).replace('-', '')
+    tokenized = [w for w in text.split() if w not in stop]
+    return tokenized
+
+vect = HashingVectorizer(decode_error='ignore',
+                         n_features=2**21,
+                         preprocessor=None,
+                         tokenizer=tokenizer)
+						</code></pre>
+						<p>Create a file and paste this code, then save it as vectorizer.py to movieclassifier directory</p>
+					</section>
+
+					<section>
+						<h3>Testing and Unserialization</h3>
+						<pre><code class="hljs" data-trim contenteditable>
+import os
+os.chdir('movieclassifier')
+						</code></pre>
+						<pre><code class="hljs" data-trim contenteditable>
+import pickle
+import re
+import os
+from vectorizer import vect
+
+clf = pickle.load(open(os.path.join('pkl_objects', 'classifier.pkl'), 'rb'))
+						</code></pre>
+						<pre><code class="hljs" data-trim contenteditable>
+import numpy as np
+label = {0:'negative', 1:'positive'}
+
+example = ['I love this movie']
+X = vect.transform(example)
+print('Prediction: %s\nProbability: %.2f%%' %\
+      (label[clf.predict(X)[0]], clf.predict_proba(X).max()*100))
+						</code></pre>
+						<pre><code class="hljs" data-trim contenteditable>
+Prediction: positive
+Probability: 82.52%
+						</code></pre>
+						<p></p>
+					</section>
+
+
+					<!-- <section>
+						<h3>Saving serialized objects to our local disk</h3>
+						<pre><code class="hljs" data-trim contenteditable>
+						</code></pre>
+						<p></p>
+					</section> -->
+
+				</section>
+				<section>
+					<section>
+					<h2>Setting up a SQLite database for data storage</h2>
+					</section>
+					<section>
+						<pre><code class="hljs" data-trim contenteditable>
+import sqlite3
+import os
+
+if os.path.exists('reviews.sqlite'):
+    os.remove('reviews.sqlite')
+
+conn = sqlite3.connect('reviews.sqlite')
+c = conn.cursor()
+c.execute('CREATE TABLE review_db (review TEXT, sentiment INTEGER, date TEXT)')
+
+example1 = 'I love this movie'
+c.execute("INSERT INTO review_db (review, sentiment, date) VALUES (?, ?, DATETIME('now'))", (example1, 1))
+
+example2 = 'I disliked this movie'
+c.execute("INSERT INTO review_db (review, sentiment, date) VALUES (?, ?, DATETIME('now'))", (example2, 0))
+
+conn.commit()
+conn.close()
+						</code></pre>
+						<p>Create a database named reviews and create review_db tables. Then insert 2 example records.</p>
+					</section>
+
+					<section>
+						<pre><code class="hljs" data-trim contenteditable>
+conn = sqlite3.connect('reviews.sqlite')
+c = conn.cursor()
+
+c.execute("SELECT * FROM review_db WHERE date BETWEEN '2017-01-01 10:10:10' AND DATETIME('now')")
+results = c.fetchall()
+
+conn.close()
+						</code></pre>
+						<p>Connect to reviews.sqlite and execute query syntax</p>
+						<pre><code class="hljs" data-trim contenteditable>
+print(results)
+						</code></pre>
+						<p>Print the results</p>
+						<pre><code class="hljs" data-trim contenteditable>
+							[('I love this movie', 1, '2016-09-30 01:31:01'), ('I disliked this movie', 0, '2017-01-1 01:31:01')]
+						</code></pre>
+					</section>
+
+				</section>
+				<section>
+					<section>
+						<h2>Building web applications with flask</h2>
+						<h3>Form validation and rendering</h3>
+					</section>
+					<section>
+						<h3>WEB1 - Flask Installation and Structuration</h3>
+						<pre><code class="hljs" data-trim contenteditable>
+pip install flask
+						</code></pre>
+
+						<img src="images/flask_1.png" width="300px">
+						<pre><code class="hljs" data-trim contenteditable>
+mkdir 1st_flask_app_1/templates
+echo '' > 1st_flask_app_1/app.py
+echo '' > 1st_flask_app_1/templates/first_app.html
+						</code></pre>
+					</section>
+					<section>
+						<pre><code class="hljs" data-trim contenteditable>
+// app.py
+from flask import Flask, render_template
+
+app = Flask(__name__)
+
+@app.route('/')
+def index():
+    return render_template('first_app.html')
+
+if __name__ == '__main__':
+    app.run(debug=True)
+						</code></pre>
+						<pre><code class="hljs" data-trim contenteditable>
+// first_app.html
+&lt;!doctype html&gt;
+&lt;html&gt;
+  &lt;head&gt;
+    &lt;title&gt;First app&lt;/title&gt;
+  &lt;/head&gt;
+  &lt;body&gt;
+
+  &lt;div&gt;
+	Hi, this is my first Flask web app!
+  &lt;/div&gt;
+
+  &lt;/body&gt;
+&lt;/html&gt;
+						</code></pre>
+					</section>
+
+					<section>
+						<pre><code class="hljs" data-trim contenteditable>
+$ python3 app.py
+						</code></pre>
+						<pre><code class="hljs" data-trim contenteditable>
+* Running on http://127.0.0.1:5000/ (Press CTRL+C to quit)
+* Restarting with stat
+* Debugger is active!
+* Debugger pin code: 308-191-720
+						</code></pre>
+						<img src="images/flask_2.png" width="450">
+						<p>Run the http server and show demo page</p>
+					</section>
+					<section>
+						<h3>WEB2 - Wtforms Installation and Structuration</h3>
+						<pre><code class="hljs" data-trim contenteditable>
+$ pip install wtforms
+						</code></pre>
+
+						<img src="images/wtforms_1.png" width="300px">
+						<pre><code class="hljs" data-trim contenteditable>
+cp -R 1st_flask_app_1 1st_flask_app_2
+mkdir 1st_flask_app_1/static
+echo '' > 1st_flask_app_1/static/style.css
+echo '' > 1st_flask_app_1/templates/_formhelpers.html
+echo '' > 1st_flask_app_1/templates/hello.html
+						</code></pre>
+					</section>
+
+					<section>
+						<pre><code class="hljs" data-trim contenteditable>
+// app.py
+from flask import Flask, render_template, request
+from wtforms import Form, TextAreaField, validators
+
+app = Flask(__name__)
+
+class HelloForm(Form):
+    sayhello = TextAreaField('',[validators.DataRequired()])
+
+@app.route('/')
+def index():
+    form = HelloForm(request.form)
+    return render_template('first_app.html', form=form)
+
+@app.route('/hello', methods=['POST'])
+def hello():
+    form = HelloForm(request.form)
+    if request.method == 'POST' and form.validate():
+        name = request.form['sayhello']
+        return render_template('hello.html', name=name)
+    return render_template('first_app.html', form=form)
+
+if __name__ == '__main__':
+    app.run(debug=True)
+						</code></pre>
+						<p>Edit app.py file</p>
+						<pre><code class="hljs" data-trim contenteditable>
+body {
+	font-size: 2em;
+}
+						</code></pre>
+						<p>Edit style.css file</p>
+					</section>
+					<section>
+						<h3>Jinja2 Template Engine</h3>
+						<pre><code class="hljs" data-trim contenteditable>
+// _formhelpers.html
+{% macro render_field(field) %}
+  &lt;dt&gt;{{ field.label }}
+  &lt;dd&gt;{{ field(**kwargs)|safe }}
+  {% if field.errors %}
+    &lt;ul class=errors&gt;
+    {% for error in field.errors %}
+      &lt;li&gt;{{ error }}&lt;/li&gt;
+    {% endfor %}
+    &lt;/ul&gt;
+  {% endif %}
+  &lt;/dd&gt;
+  &lt;/dt&gt;
+{% endmacro %}
+						</code></pre>
+						<p>Edit _formhelpers.html file</p>
+					</section>
+
+					<section>
+						<pre><code class="hljs" data-trim contenteditable>
+// first_app.html
+&lt;!doctype html&gt;
+&lt;html&gt;
+  &lt;head&gt;
+    &lt;title&gt;First app&lt;/title&gt;
+	&lt;link rel=&quot;stylesheet&quot; href=&quot;{{ url_for('static', filename='style.css') }}&quot;&gt;
+  &lt;/head&gt;
+  &lt;body&gt;
+{% from &quot;_formhelpers.html&quot; import render_field %}
+&lt;div&gt;What's your name?&lt;/div&gt;
+&lt;form method=post action=&quot;/hello&quot;&gt;
+  &lt;dl&gt;
+	  {{ render_field(form.sayhello) }}
+  &lt;/dl&gt;
+  &lt;input type=submit value='Say Hello' name='submit_btn'&gt;
+&lt;/form&gt;
+  &lt;/body&gt;
+&lt;/html&gt;
+						</code></pre>
+						<p>Edit first_app.html file</p>
+
+					</section>
+					<section>
+						<pre><code class="hljs" data-trim contenteditable>
+// hello.html
+&lt;!doctype html&gt;
+&lt;html&gt;
+  &lt;head&gt;
+    &lt;title&gt;First app&lt;/title&gt;
+	&lt;link rel=&quot;stylesheet&quot; href=&quot;{{ url_for('static', filename='style.css') }}&quot;&gt;
+  &lt;/head&gt;
+  &lt;body&gt;
+&lt;div&gt;Hello {{ name }}&lt;/div&gt;
+  &lt;/body&gt;
+&lt;/html&gt;
+						</code></pre>
+						<p>Edit hello.html file</p>
+						<img src="images/flask_wtforms.gif">
+					</section>
+				</section>
+				<section>
+					<section>
+						<h2>Turning the movie classifier into a web application</h2>
+					</section>
+
+					<section>
+						<pre><code class="hljs" data-trim contenteditable>
+// app.py
+from flask import Flask, render_template, request
+from wtforms import Form, TextAreaField, validators
+import pickle
+import sqlite3
+import os
+import numpy as np
+
+# import HashingVectorizer from local dir
+from vectorizer import vect
+
+app = Flask(__name__)
+
+######## Preparing the Classifier
+cur_dir = os.path.dirname(__file__)
+clf = pickle.load(open(os.path.join(cur_dir,
+                 'pkl_objects',
+                 'classifier.pkl'), 'rb'))
+db = os.path.join(cur_dir, 'reviews.sqlite')
+
+def classify(document):
+    label = {0: 'negative', 1: 'positive'}
+    X = vect.transform([document])
+    y = clf.predict(X)[0]
+    proba = np.max(clf.predict_proba(X))
+    return label[y], proba
+
+def train(document, y):
+    X = vect.transform([document])
+    clf.partial_fit(X, [y])
+
+def sqlite_entry(path, document, y):
+    conn = sqlite3.connect(path)
+    c = conn.cursor()
+    c.execute("INSERT INTO review_db (review, sentiment, date)"\
+    " VALUES (?, ?, DATETIME('now'))", (document, y))
+    conn.commit()
+    conn.close()
+
+######## Flask
+class ReviewForm(Form):
+    moviereview = TextAreaField('',
+                                [validators.DataRequired(),
+                                validators.length(min=15)])
+
+@app.route('/')
+def index():
+    form = ReviewForm(request.form)
+    return render_template('reviewform.html', form=form)
+
+@app.route('/results', methods=['POST'])
+def results():
+    form = ReviewForm(request.form)
+    if request.method == 'POST' and form.validate():
+        review = request.form['moviereview']
+        y, proba = classify(review)
+        return render_template('results.html',
+                                content=review,
+                                prediction=y,
+                                probability=round(proba*100, 2))
+    return render_template('reviewform.html', form=form)
+
+@app.route('/thanks', methods=['POST'])
+def feedback():
+    feedback = request.form['feedback_button']
+    review = request.form['review']
+    prediction = request.form['prediction']
+
+    inv_label = {'negative': 0, 'positive': 1}
+    y = inv_label[prediction]
+    if feedback == 'Incorrect':
+        y = int(not(y))
+    train(review, y)
+    sqlite_entry(db, review, y)
+    return render_template('thanks.html')
+
+if __name__ == '__main__':
+    app.run(debug=True)
+						</code></pre>
+						<p>Import python model and object, load the model</p>
+					</section>
+
+					<section>
+
+						<pre><code class="hljs" data-trim contenteditable>
+// reviewform.html
+&lt;!doctype html&gt;
+&lt;html&gt;
+  &lt;head&gt;
+    &lt;title&gt;Movie Classification&lt;/title&gt;
+	&lt;link rel=&quot;stylesheet&quot; href=&quot;{{ url_for('static', filename='style.css') }}&quot;&gt;
+  &lt;/head&gt;
+  &lt;body&gt;
+&lt;h2&gt;Please enter your movie review:&lt;/h2&gt;
+{% from &quot;_formhelpers.html&quot; import render_field %}
+&lt;form method=post action=&quot;/results&quot;&gt;
+  &lt;dl&gt;
+	{{ render_field(form.moviereview, cols='30', rows='10') }}
+  &lt;/dl&gt;
+  &lt;div&gt;
+	  &lt;input type=submit value='Submit review' name='submit_btn'&gt;
+  &lt;/div&gt;
+&lt;/form&gt;
+  &lt;/body&gt;
+&lt;/html&gt;
+						</code></pre>
+						<p>Edit reviewform.html file</p>
+					</section>
+
+					<section>
+
+						<pre><code class="hljs" data-trim contenteditable>
+// results.html
+&lt;!doctype html&gt;
+&lt;html&gt;
+  &lt;head&gt;
+    &lt;title&gt;Movie Classification&lt;/title&gt;
+	&lt;link rel=&quot;stylesheet&quot; href=&quot;{{ url_for('static', filename='style.css') }}&quot;&gt;
+  &lt;/head&gt;
+  &lt;body&gt;
+
+&lt;h3&gt;Your movie review:&lt;/h3&gt;
+&lt;div&gt;{{ content }}&lt;/div&gt;
+
+&lt;h3&gt;Prediction:&lt;/h3&gt;
+&lt;div&gt;This movie review is &lt;strong&gt;{{ prediction }}&lt;/strong&gt;
+	 (probability: {{ probability }}%).&lt;/div&gt;
+
+&lt;div id='button'&gt;
+	  &lt;form action=&quot;/thanks&quot; method=&quot;post&quot;&gt;
+	    &lt;input type=submit value='Correct' name='feedback_button'&gt;
+		&lt;input type=submit value='Incorrect' name='feedback_button'&gt;
+		&lt;input type=hidden value='{{ prediction }}' name='prediction'&gt;
+		&lt;input type=hidden value='{{ content }}' name='review'&gt;
+	  &lt;/form&gt;
+&lt;/div&gt;
+
+&lt;div id='button'&gt;
+	  &lt;form action=&quot;/&quot;&gt;
+	    &lt;input type=submit value='Submit another review'&gt;
+	  &lt;/form&gt;
+&lt;/div&gt;
+
+  &lt;/body&gt;
+&lt;/html&gt;
+
+						</code></pre>
+						<p>Edit results.html file</p>
+					</section>
+
+					<section>
+
+						<pre><code class="hljs" data-trim contenteditable>
+// thanks.html
+&lt;!doctype html&gt;
+&lt;html&gt;
+  &lt;head&gt;
+    &lt;title&gt;Movie Classification&lt;/title&gt;
+	&lt;link rel=&quot;stylesheet&quot; href=&quot;{{ url_for('static', filename='style.css') }}&quot;&gt;
+  &lt;/head&gt;
+  &lt;body&gt;
+
+&lt;h3&gt;Thank you for your feedback!&lt;/h3&gt;
+
+&lt;div id='button'&gt;
+	  &lt;form action=&quot;/&quot;&gt;
+	    &lt;input type=submit value='Submit another review'&gt;
+	  &lt;/form&gt;
+&lt;/div&gt;
+
+  &lt;/body&gt;
+&lt;/html&gt;
+						</code></pre>
+						<p>Edit thanks.html file</p>
+					</section>
+
+					<section>
+						<img src="images/local_demo.gif">
+						<p></p>
+					</section>
+
+				</section>
+
+				<section>
+					<section>
+						<h2>Updating the movie review classifier</h2>
+					</section>
+					<section>
+						<pre><code class="hljs" data-trim contenteditable>
+// update.py
+import pickle
+import sqlite3
+import numpy as np
+import os
+
+# import HashingVectorizer from local dir
+from vectorizer import vect
+
+def update_model(db_path, model, batch_size=10000):
+
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute('SELECT * from review_db')
+
+    results = c.fetchmany(batch_size)
+    while results:
+        data = np.array(results)
+        X = data[:, 0]
+        y = data[:, 1].astype(int)
+
+        classes = np.array([0, 1])
+        X_train = vect.transform(X)
+        model.partial_fit(X_train, y, classes=classes)
+        results = c.fetchmany(batch_size)
+
+    conn.close()
+    return model
+
+cur_dir = os.path.dirname(__file__)
+
+clf = pickle.load(open(os.path.join(cur_dir,
+                  'pkl_objects',
+                  'classifier.pkl'), 'rb'))
+db = os.path.join(cur_dir, 'reviews.sqlite')
+
+clf = update_model(db_path=db, model=clf, batch_size=10000)
+
+# Uncomment the following lines if you are sure that
+# you want to update your classifier.pkl file
+# permanently.
+
+# pickle.dump(clf, open(os.path.join(cur_dir,
+#             'pkl_objects', 'classifier.pkl'), 'wb')
+#             , protocol=4)
+						</code></pre>
+					</section>
+					<section>
+						<pre><code class="hljs" data-trim contenteditable>
+// app.py
+import update fuction from update
+...
+if __name__ == '__main__':
+	update_model(db_path=db, model=clf, batch_size=10000)
+...
+						</code></pre>
+					</section>
+
+				</section>
+
+				<section>
+					<section>
+						<h2>Deploying the web application to a public server</h2>
+						<h3>PythonAnywhere Hosting</h3>
+					</section>
+					<section>
+						<img src="images/deploy/1.png">
+					</section>
+					<section>
+						<img src="images/deploy/2.png">
+					</section>
+					<section>
+						<img src="images/deploy/3-1.png">
+					</section>
+					<section>
+						<img src="images/deploy/3-2.png">
+					</section>
+
+					<section>
+						<img src="images/deploy/4.png">
+					</section>
+
+					<section>
+						<img src="images/deploy/5.png">
+					</section>
+
+					<section>
+						<img src="images/deploy/6-1.png">
+					</section>
+					<section>
+						<img src="images/deploy/6-2.png">
+					</section>
+					<section>
+						<img src="images/deploy/7.png">
+					</section>
+					<section>
+						<img src="images/deploy/8.png">
+					</section>
+					<section>
+						<a href="http://cheng.pythonanywhere.com/" target="_blank">LIVE DEMO</a>
+					</section>
+
+				</section>
+
+				<section data-background="http://i.imgur.com/2XEWLgC.gif">
+					<h2>Thanks! </h2>
+				</section>
+
+
+
+
+			</div>
+		</div>
+
+		<script src="lib/js/head.min.js"></script>
+		<script src="js/reveal.js"></script>
+
+		<script>
+			// More info https://github.com/hakimel/reveal.js#configuration
+			Reveal.initialize({
+				controls: true,
+				progress: true,
+				history: true,
+				center: true,
+
+				transition: 'slide', // none/fade/slide/convex/concave/zoom
+
+				// More info https://github.com/hakimel/reveal.js#dependencies
+				dependencies: [
+					{ src: 'lib/js/classList.js', condition: function() { return !document.body.classList; } },
+					{ src: 'plugin/markdown/marked.js', condition: function() { return !!document.querySelector( '[data-markdown]' ); } },
+					{ src: 'plugin/markdown/markdown.js', condition: function() { return !!document.querySelector( '[data-markdown]' ); } },
+					{ src: 'plugin/highlight/highlight.js', async: true, callback: function() { hljs.initHighlightingOnLoad(); } },
+					{ src: 'plugin/zoom-js/zoom.js', async: true },
+					{ src: 'plugin/notes/notes.js', async: true }
+				]
+			});
+		</script>
+	</body>
+</html>
